@@ -1,5 +1,4 @@
-﻿Name,Range,HostSubnet,BastionSubnet,ResourceGroup,Location
-C2andRpt,151.199.42.0/23,151.199.42.0/24,151.199.43.0/25,MPNetwork-C2,EastUS
-Shield,151.188.14.0/23,151.188.14.0/24,151.188.15.0/25,MPNetwork-Shield,Central US
-Vault,199.134.56.0/23,199.134.56.0/24,199.134.57.0/25,MPNetwork-Vault,West US
-MIP,10.0.0.0/23,10.0.0.0/24,10.0.1.0/25,MIP,EastUS
+﻿Name,Range,HostSubnet,BastionSubnet,GatewaySubnet,ResourceGroup,Location
+C2andRpt,151.199.42.0/23,151.199.42.0/24,151.199.43.0/25,151.199.43.128/25,MPNetwork-C2,EastUS
+Shield,151.188.14.0/23,151.188.14.0/24,151.188.15.0/25,151.188.15.128/25,MPNetwork-Shield,Central US
+Vault,199.134.56.0/23,199.134.56.0/24,199.134.57.0/25,199.134.57.128/25,MPNetwork-Vault,West US
