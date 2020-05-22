@@ -14,7 +14,7 @@ param (
     [string]
     $Location = "East US"
 )
-
+Set-Item Env:\SuppressAzurePowerShellBreakingChangeWarnings "true"
 $resultsfile = $env:TEMP + "\AzureDeployment.txt"
 "Azure Deployment: $(Get-Date)" | Set-Content -Path $resultsfile
 
@@ -23,6 +23,8 @@ $import_csv = @{path = Join-Path -ChildPath "SubNets.csv" -Path $Path}
 $Subnets = Import-Csv @import_csv
 $import_csv.path = Join-Path -ChildPath "Hosts.csv" -Path $Path
 $Hosts = Import-Csv @import_csv
+
+Connect-AzAccount
 
 #region create Resource Group
 Write-Verbose -Message "Creating $($_.ResourceGroup) resource group in location $($_.Location)"
@@ -38,11 +40,14 @@ Write-Verbose -Message "Creating Mission Partner Network"
 $sn = @($Subnets | ForEach-Object {New-AzVirtualNetworkSubnetConfig -Name $_.name -AddressPrefix $_.subnet})
 $sn += New-AzVirtualNetworkSubnetConfig -Name "AzureBastionSubnet" -AddressPrefix "10.1.0.0/27"
 $sn += New-AzVirtualNetworkSubnetConfig -Name "GatewaySubnet" -AddressPrefix "10.1.0.32/27"
+$addrspace = @($Subnets | Select-Object -ExpandProperty Subnet)
+$addrspace += "10.1.0.0/27"
+$addrspace += "10.1.0.32/27"
 $NewAzVirtualNetworkArgs = @{
     Name = "MPNetwork"
     ResourceGroupName = $ResourceGroup
     Location          = $location
-    AddressPrefix     = @($Subnets | Select-Object -ExpandProperty Subnet)
+    AddressPrefix     = $addrspace
     Subnet            = $sn
 } #hashtable for splatting
 New-AzVirtualNetwork @NewAzVirtualNetworkArgs |
@@ -53,13 +58,13 @@ Write-Verbose -Message "Building Network Gateway for Mission Partner Network"
 #GW requires public IP for interconnection
 $newpubipargs = @{
     Name              = "VNetGWPubIP" 
-    ResourceGroupName = $Resource 
+    ResourceGroupName = $ResourceGroup 
     Location          = $location 
     AllocationMethod  = "Dynamic"
 }
-$gwip = New-AzPublicIpAddress @newpubipargs
-$nw   = Get-AzVirtualNetwork -Name "MPNetwork" -ResourceGroupName $Resource
-$sn   = Get-AzVirtualNetworkSubnetConfig -Name "GatewaySubnet" -VirtualNetwork $nw
+$gwip = New-AzPublicIpAddress @newpubipargs -WarningAction SilentlyContinue
+$nw   = Get-AzVirtualNetwork -Name "MPNetwork" -ResourceGroupName $ResourceGroup
+$sn   = Get-AzVirtualNetworkSubnetConfig -Name "GatewaySubnet" -VirtualNetwork $nw -WarningAction SilentlyContinue
 $newgwipconfigargs = @{
     Name            = "VNetGWIPConfig" 
     Subnet          = $sn 
@@ -68,8 +73,8 @@ $newgwipconfigargs = @{
 $gwipconfig = New-AzVirtualNetworkGatewayIpConfig @newgwipconfigargs
 $newgwargs = @{
     name = "MPNetwork-Gateway"
-    ResourceGroup = $Resource
-    Location      = $Location
+    ResourceGroupName = $ResourceGroup
+    Location          = $Location
     IPConfigurations = $gwipconfig
     GatewayType      = "VPN"
     VpnType          = "RouteBased"
@@ -79,9 +84,10 @@ $newgwargs = @{
 $gwJob = New-AzVirtualNetworkGateway @newgwargs
 
 #Create the Bastion for backdoor connection to MP Hosts
-$bastionip = New-AzPublicIpAddress -Name "BastionIP" -ResourceGroupName $Resource -Location $Location
+$newpubipargs.Name              = "BastionIP" 
+$bastionip = New-AzPublicIpAddress @newpubipargs
 $newbastionargs = @{
-    ResourceGroupName = $Resource
+    ResourceGroupName = $ResourceGroup
     Name              = "MP-Bastion"
     PublicIpAddress   = $bastionip
     VirtualNetwork   = $nw      
@@ -106,13 +112,13 @@ $vmcreationjob = @()
 foreach ($vm in $Hosts) {
     $NewNICArgs = @{
         Name              = $vm.name + "-NIC"
-        ResourceGroupName = $Resource
+        ResourceGroupName = $ResourceGroup
         Location          = $Location
-        $Subnet           = Get-AzVirtualNetworkSubnetConfig -Name $vm.Subnet -VirtualNetwork
+        $Subnet           = Get-AzVirtualNetworkSubnetConfig -Name $vm.Subnet -VirtualNetwork $nw
     }
     $NIC = New-AzNetworkInterface @NewNICArgs
 
-    $virtualmachine = New-AzVMConfig -VMName $vm.hostname -VmssId $vm.size
+    $virtualmachine = New-AzVMConfig -VMName $vm.hostname -VMSize $vm.size
     $OSArgs = @{
         VM = $virtualmachine
         ComputerName = $vm.hostname
@@ -136,7 +142,7 @@ foreach ($vm in $Hosts) {
     }
     $virtualmachine = Set-AzVMSourceImage @sourceimageargs
     $NewAzVMArgs = @{
-        ResourceGroupName = $Resource
+        ResourceGroupName = $ResourceGroup
         Location          = $Location
         VirtualMachine    = $virtualmachine
         Verbose           = $true
