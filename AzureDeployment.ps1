@@ -62,7 +62,6 @@ $newpubipargs = @{
     ResourceGroupName = $ResourceGroup 
     Location          = $location 
     AllocationMethod  = "Dynamic"
-    Sku             = "Standard"
 }
 Write-Verbose -Message "Creating GW public IP address"
 $gwip = New-AzPublicIpAddress @newpubipargs -WarningAction SilentlyContinue
@@ -90,6 +89,8 @@ $gwJob = New-AzVirtualNetworkGateway @newgwargs
 
 #Create the Bastion for backdoor connection to MP Hosts
 $newpubipargs.Name = "BastionIP" 
+$newpubipargs.sku  = "Standard"
+$newpubipargs.AllocationMethod = "Static"
 Write-Verbose -Message "Creating Bastion Public IP"
 $bastionip = New-AzPublicIpAddress @newpubipargs
 $newbastionargs = @{
@@ -102,11 +103,6 @@ $newbastionargs = @{
 Write-Verbose -Message "Creating Bastion for MP Network"
 $bastionjob = New-AzBastion @newbastionargs
 #endregion
-
-Write-Verbose -Message "Waiting for bastion creation"
-Wait-Job -Id ($bastionjob).Id
-$bastionjob |
-    Out-File -FilePath $resultsfile -Append -Encoding ascii
 
 #region create hosts vms
 $vmcreationjob = @()
@@ -128,8 +124,7 @@ foreach ($vm in $Hosts) {
         ComputerName     = $vm.hostname
         Credential       = $DefaultHostAccount
         ProvisionVMAgent = $true
-        WinRMHTTP        = $true
-        WinRMHTTPs       = $true      
+        WinRMHTTP        = $true    
     }
     switch ($vm.OSType) {
         "Windows" {$OSArgs.Windows = $true}
@@ -152,11 +147,17 @@ foreach ($vm in $Hosts) {
         Location          = $Location
         VM                = $virtualmachine
         Verbose           = $true
+        AsJob             = $true
     } #splatting hashtable
     Write-Verbose -Message "Creating $($vm.hostname) virtual machine"
-    $vmcreationjob = New-AzVM @NewAzVMArgs
-}
+    $vmcreationjob += New-AzVM @NewAzVMArgs
+} 
 #endregion
+
+Write-Verbose -Message "Waiting for Bastion creation"
+Wait-Job -Id ($bastionjob).Id
+$bastionjob |
+    Out-File -FilePath $resultsfile -Append -Encoding ascii
 
 #wait for VM creation to complete
 Write-Verbose -Message "Waiting for VM creation to complete"
