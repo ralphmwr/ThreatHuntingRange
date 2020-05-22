@@ -24,10 +24,12 @@ $Subnets = Import-Csv @import_csv
 $import_csv.path = Join-Path -ChildPath "Hosts.csv" -Path $Path
 $Hosts = Import-Csv @import_csv
 
-Connect-AzAccount
+if (!(Get-AzContext)) {
+    Connect-AzAccount
+}
 
 #region create Resource Group
-Write-Verbose -Message "Creating $($_.ResourceGroup) resource group in location $($_.Location)"
+Write-Verbose -Message "Creating $($ResourceGroup) resource group in location $($Location)"
 $NewAzResourceGroupArgs = @{} #hashtable for splatting
 $NewAzResourceGroupArgs.name = $ResourceGroup
 $NewAzResourceGroupArgs.location = $Location
@@ -54,14 +56,15 @@ New-AzVirtualNetwork @NewAzVirtualNetworkArgs |
     Out-File -FilePath $resultsfile -Append -Encoding ascii
     
 #Creating Gateway
-Write-Verbose -Message "Building Network Gateway for Mission Partner Network"
 #GW requires public IP for interconnection
 $newpubipargs = @{
     Name              = "VNetGWPubIP" 
     ResourceGroupName = $ResourceGroup 
     Location          = $location 
     AllocationMethod  = "Dynamic"
+    Sku             = "Standard"
 }
+Write-Verbose -Message "Creating GW public IP address"
 $gwip = New-AzPublicIpAddress @newpubipargs -WarningAction SilentlyContinue
 $nw   = Get-AzVirtualNetwork -Name "MPNetwork" -ResourceGroupName $ResourceGroup
 $sn   = Get-AzVirtualNetworkSubnetConfig -Name "GatewaySubnet" -VirtualNetwork $nw -WarningAction SilentlyContinue
@@ -70,6 +73,7 @@ $newgwipconfigargs = @{
     Subnet          = $sn 
     PublicIpAddress = $gwip
 }
+Write-Verbose -Message "Setting GW Config"
 $gwipconfig = New-AzVirtualNetworkGatewayIpConfig @newgwipconfigargs
 $newgwargs = @{
     name = "MPNetwork-Gateway"
@@ -81,26 +85,23 @@ $newgwargs = @{
     GatewaySku       = "VpnGw1"
     AsJob            = $true
 } #Hashtable for splatting
+Write-Verbose -Message "Creating Network Gateway for Mission Partner Network"
 $gwJob = New-AzVirtualNetworkGateway @newgwargs
 
 #Create the Bastion for backdoor connection to MP Hosts
-$newpubipargs.Name              = "BastionIP" 
+$newpubipargs.Name = "BastionIP" 
+Write-Verbose -Message "Creating Bastion Public IP"
 $bastionip = New-AzPublicIpAddress @newpubipargs
 $newbastionargs = @{
     ResourceGroupName = $ResourceGroup
     Name              = "MP-Bastion"
     PublicIpAddress   = $bastionip
-    VirtualNetwork   = $nw      
-    AsJob            = $true
+    VirtualNetwork    = $nw      
+    AsJob             = $true
 }
+Write-Verbose -Message "Creating Bastion for MP Network"
 $bastionjob = New-AzBastion @newbastionargs
 #endregion
-
-#wait for network gateway creation to complete
-Write-Verbose -Message "Waiting for gateway creation to complete"
-Wait-Job -Id $gwJob.Id
-$gwJob |
-    Out-File -FilePath $resultsfile -Append -Encoding ascii 
 
 Write-Verbose -Message "Waiting for bastion creation"
 Wait-Job -Id ($bastionjob).Id
@@ -110,19 +111,22 @@ $bastionjob |
 #region create hosts vms
 $vmcreationjob = @()
 foreach ($vm in $Hosts) {
+
     $NewNICArgs = @{
-        Name              = $vm.name + "-NIC"
+        Name              = $vm.hostname + "-NIC"
         ResourceGroupName = $ResourceGroup
         Location          = $Location
-        $Subnet           = Get-AzVirtualNetworkSubnetConfig -Name $vm.Subnet -VirtualNetwork $nw
+        Subnet            = Get-AzVirtualNetworkSubnetConfig -Name $vm.Subnet -VirtualNetwork $nw
     }
+    Write-Verbose -Message "Creating NIC for $($vm.hostname)"
     $NIC = New-AzNetworkInterface @NewNICArgs
 
+    Write-Verbose -Message "Creating $($vm.hostname) config"
     $virtualmachine = New-AzVMConfig -VMName $vm.hostname -VMSize $vm.size
     $OSArgs = @{
         VM = $virtualmachine
-        ComputerName = $vm.hostname
-        Credential   = $Credential
+        ComputerName     = $vm.hostname
+        Credential       = $DefaultHostAccount
         ProvisionVMAgent = $true
         WinRMHTTP        = $true
         WinRMHTTPs       = $true      
@@ -131,6 +135,7 @@ foreach ($vm in $Hosts) {
         "Windows" {$OSArgs.Windows = $true}
         "Linux"   {$OSArgs.Linux   = $true}
     }
+    Write-Verbose -Message "Setting OS for $($vm.hostname)"
     $virtualmachine = Set-AzVMOperatingSystem @OSArgs
     $virtualmachine = Add-AzVMNetworkInterface -VM $virtualmachine -Id $NIC.Id
     $sourceimageargs = @{
@@ -140,22 +145,25 @@ foreach ($vm in $Hosts) {
         Skus          = $vm.Skus
         Version       = "Latest"
     }
+    Write-Verbose -Message "Setting $($vm.hostname) image"
     $virtualmachine = Set-AzVMSourceImage @sourceimageargs
     $NewAzVMArgs = @{
         ResourceGroupName = $ResourceGroup
         Location          = $Location
-        VirtualMachine    = $virtualmachine
+        VM                = $virtualmachine
         Verbose           = $true
     } #splatting hashtable
+    Write-Verbose -Message "Creating $($vm.hostname) virtual machine"
     $vmcreationjob = New-AzVM @NewAzVMArgs
 }
 #endregion
 
+#wait for VM creation to complete
+Write-Verbose -Message "Waiting for VM creation to complete"
 Wait-Job -Id ($vmcreationjob).Id
 $vmcreationjob |
     Out-File -FilePath $resultsfile -Append -Encoding ascii
 
 #next create AD domain, domain users, join window hosts to domain, set firewall rules allow ps remoting/ICMP/Etc
-
 
 Invoke-Item $resultsfile
